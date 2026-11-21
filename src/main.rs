@@ -764,7 +764,7 @@ struct Ev {
     nh: u64,     // hash of the person's name (identity of the person)
     name: u64,   // packed person name
     ingest: i64, // ingest_ts in ms
-    ts: u32,     // ms since window_start; u32::MAX = invalid, late, or discarded duplicate
+    ts: u32,     // ms since window_start; u32::MAX = invalid or late copy
     pc: u32,     // price << 8 | category rank (price 0 unless a purchase)
 }
 
@@ -1091,10 +1091,9 @@ fn main() {
                                 if ingest - ts > DAY {
                                     break 'v; // late: dropped if this copy is the kept one
                                 }
+                                let cat = prod.get(f[5]);
                                 e.ts = (ts - ws) as u32;
-                                if price > 0 {
-                                    e.pc = (price << 8) | u32::from(prod.get(f[5]));
-                                }
+                                e.pc = (price << 8) | cat as u32;
                                 e.name = pack(f[1]);
                                 let uh = h64(f[1]);
                                 links.prefetch(uh);
@@ -1180,6 +1179,7 @@ fn main() {
             let mut acc: Buckets<PE> = Buckets::new(mine + mine / 8);
             let mut all: Vec<Ev> = Vec::new();
             let mut table: Vec<u32> = Vec::new();
+            let mut win: Vec<bool> = Vec::new();
             for &b in bs {
                 let t = std::time::Instant::now();
                 all.clear();
@@ -1191,33 +1191,34 @@ fn main() {
                 table.clear();
                 table.resize(cap, u32::MAX);
                 let mask = cap - 1;
-                for i in 0..all.len() {
-                    let eh = all[i].eh;
-                    let mut pos = (eh as usize) & mask;
+                for (i, e) in all.iter().enumerate() {
+                    let mut pos = (e.eh as usize) & mask;
                     loop {
                         let k = table[pos];
                         if k == u32::MAX {
                             table[pos] = i as u32;
                             break;
                         }
-                        let k = k as usize;
-                        if all[k].eh == eh {
-                            // Keep the earliest copy even if it is invalid. Mark only the loser.
-                            let loser = if all[i].ingest < all[k].ingest {
+                        let o = &all[k as usize];
+                        if o.eh == e.eh {
+                            if e.ingest < o.ingest {
                                 table[pos] = i as u32;
-                                k
-                            } else {
-                                i
-                            };
-                            all[loser].ts = u32::MAX;
+                            }
                             break;
                         }
                         pos = (pos + 1) & mask;
                     }
                 }
                 let t = tick(3, t);
-                for e in &all {
-                    if e.ts != u32::MAX {
+                win.clear();
+                win.resize(all.len(), false);
+                for &k in &table {
+                    if k != u32::MAX {
+                        win[k as usize] = true;
+                    }
+                }
+                for (e, &w) in all.iter().zip(win.iter()) {
+                    if w && e.ts != u32::MAX {
                         acc.push(bucket(e.nh), PE { nh: e.nh, name: e.name, ts: e.ts, pc: e.pc });
                     }
                 }
