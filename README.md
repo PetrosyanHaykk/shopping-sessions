@@ -46,3 +46,5 @@ python3 scripts/compare.py out dev-answer                                       
 With Docker, the way the scorer runs it: `make build && make fixtures`.
 
 Environment: `DATA_DIR` (default `/data`), `OUTPUT_DIR` (default `/output`), `NCPU` (thread count, defaults to all cores), and `TIMING` (print phase timings).
+
+CPU and memory tuning: `GROUP_MULTIPLIER=1|2|4` (default `2`) controls the number of bucket-processing tasks per thread and user output parts. `MMAP_POPULATE=0|1` and `PREFAULT_WRITE=0|1` independently control eager input mapping and anonymous write-page prefaulting (both default to `1`). Lazy anonymous mappings retain the kernel's zero-initialization guarantee. Benchmarks should use a fresh output directory and compare table contents independently of Parquet partitioning.
