@@ -1,0 +1,584 @@
+{
+  "implementation": "scripts/reference.py (Python reference, not the Rust binary)",
+  "passed": 36,
+  "total": 36,
+  "seconds": 4.163,
+  "results": [
+    {
+      "case": "A1",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        }
+      }
+    },
+    {
+      "case": "A10",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 3,
+          "expected_rows": 3
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 3,
+          "expected_rows": 3
+        }
+      }
+    },
+    {
+      "case": "A11",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 3,
+          "expected_rows": 3
+        }
+      }
+    },
+    {
+      "case": "A12",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 4,
+          "expected_rows": 4
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 6,
+          "expected_rows": 6
+        }
+      }
+    },
+    {
+      "case": "A2",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        }
+      }
+    },
+    {
+      "case": "A3",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        }
+      }
+    },
+    {
+      "case": "A4",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        }
+      }
+    },
+    {
+      "case": "A5",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        }
+      }
+    },
+    {
+      "case": "A6",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        }
+      }
+    },
+    {
+      "case": "A7",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        }
+      }
+    },
+    {
+      "case": "A8",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        }
+      }
+    },
+    {
+      "case": "A9",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        }
+      }
+    },
+    {
+      "case": "E1",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        }
+      }
+    },
+    {
+      "case": "E10",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        }
+      }
+    },
+    {
+      "case": "E11",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        }
+      }
+    },
+    {
+      "case": "E12",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        }
+      }
+    },
+    {
+      "case": "E13",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 0,
+          "expected_rows": 0
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 0,
+          "expected_rows": 0
+        }
+      }
+    },
+    {
+      "case": "E14",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        }
+      }
+    },
+    {
+      "case": "E15",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        }
+      }
+    },
+    {
+      "case": "E16",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        }
+      }
+    },
+    {
+      "case": "E17",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        }
+      }
+    },
+    {
+      "case": "E18",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        }
+      }
+    },
+    {
+      "case": "E19",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 3,
+          "expected_rows": 3
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        }
+      }
+    },
+    {
+      "case": "E2",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        }
+      }
+    },
+    {
+      "case": "E20",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        }
+      }
+    },
+    {
+      "case": "E3",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        }
+      }
+    },
+    {
+      "case": "E4",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        }
+      }
+    },
+    {
+      "case": "E5",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 0,
+          "expected_rows": 0
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 0,
+          "expected_rows": 0
+        }
+      }
+    },
+    {
+      "case": "E6",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        }
+      }
+    },
+    {
+      "case": "E7",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        }
+      }
+    },
+    {
+      "case": "E8",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        }
+      }
+    },
+    {
+      "case": "E9",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        }
+      }
+    },
+    {
+      "case": "L1",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        }
+      }
+    },
+    {
+      "case": "L2",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        }
+      }
+    },
+    {
+      "case": "L3",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 5,
+          "expected_rows": 5
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        }
+      }
+    },
+    {
+      "case": "L4",
+      "passed": true,
+      "tables": {
+        "user_daily": {
+          "matches": true,
+          "actual_rows": 1,
+          "expected_rows": 1
+        },
+        "campaign_daily": {
+          "matches": true,
+          "actual_rows": 2,
+          "expected_rows": 2
+        }
+      }
+    }
+  ]
+}

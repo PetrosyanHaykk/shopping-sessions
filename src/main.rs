@@ -59,8 +59,8 @@ const TN: [&str; 10] = [
     "ss-gather",
     "ss-sort",
     "ss-walk",
-    "",
-    "",
+    "user-write",
+    "camp-write",
 ];
 #[inline]
 fn tick(i: usize, t: std::time::Instant) -> std::time::Instant {
@@ -86,7 +86,7 @@ fn config() -> &'static Config {
     static CONFIG: std::sync::OnceLock<Config> = std::sync::OnceLock::new();
     CONFIG.get_or_init(|| {
         let group_multiplier = std::env::var("GROUP_MULTIPLIER")
-            .unwrap_or_else(|_| "2".into())
+            .unwrap_or_else(|_| "4".into())
             .parse::<usize>()
             .ok()
             .filter(|n| matches!(n, 1 | 2 | 4))
@@ -1105,9 +1105,16 @@ fn main() {
     pool.build_global().ok();
     let t0 = std::time::Instant::now();
     let timing = std::env::var("TIMING").is_ok();
+    let last_lap = std::cell::Cell::new(t0);
     let lap = |what: &str| {
         if timing {
-            eprintln!("{:>8.3}s {what}", t0.elapsed().as_secs_f64());
+            let now = std::time::Instant::now();
+            eprintln!(
+                "{:>8.3}s total / +{:>7.3}s phase: {what}",
+                (now - t0).as_secs_f64(),
+                (now - last_lap.get()).as_secs_f64()
+            );
+            last_lap.set(now);
         }
     };
 
@@ -1479,12 +1486,18 @@ fn main() {
                 tmp.reserve(evs.len());
                 pos.clear();
                 pos.extend_from_slice(&pcount[..np]);
+                // Write each record exactly once into its unique counting-sort slot.
+                // A single raw pointer avoids making and indexing a spare-capacity
+                // slice for every event. The length is updated only after all slots
+                // have been initialized (unlike the original pre-Codex code).
+                let dest = tmp.as_mut_ptr();
                 for (e, &x) in evs.iter().zip(pidx.iter()) {
                     let k = &mut pos[x as usize];
-                    tmp.spare_capacity_mut()[*k as usize].write(*e);
+                    debug_assert!((*k as usize) < tmp.capacity());
+                    unsafe { dest.add(*k as usize).write(*e) };
                     *k += 1;
                 }
-                // The prefix sums scatter every event into a unique initialized slot.
+                // Prefix sums guarantee a permutation of 0..evs.len().
                 unsafe { tmp.set_len(evs.len()) };
                 std::mem::swap(&mut evs, &mut tmp);
                 for x in 0..np {
@@ -1512,14 +1525,16 @@ fn main() {
                 ctmp.reserve(ccount[np] as usize);
                 pos.clear();
                 pos.extend_from_slice(&ccount[..np]);
+                let cdest = ctmp.as_mut_ptr();
                 for (c, &x) in cks.iter().zip(cidx.iter()) {
                     if x != u32::MAX {
                         let k = &mut pos[x as usize];
-                        ctmp.spare_capacity_mut()[*k as usize].write(*c);
+                        debug_assert!((*k as usize) < ctmp.capacity());
+                        unsafe { cdest.add(*k as usize).write(*c) };
                         *k += 1;
                     }
                 }
-                // Only clicks with a person index occupy this initialized prefix.
+                // Only clicks with surviving events occupy the initialized prefix.
                 unsafe { ctmp.set_len(ccount[np] as usize) };
                 std::mem::swap(&mut cks, &mut ctmp);
                 for x in 0..np {
@@ -1644,11 +1659,13 @@ fn main() {
                 tick(7, t);
             }
             let done = (rows, camp);
+            let write_start = std::time::Instant::now();
             write_users(
                 &ud.join(format!("part-{g:05}.parquet")),
                 std::slice::from_ref(&done),
                 &cats,
             );
+            tick(8, write_start);
             (Vec::new(), done.1)
         })
         .collect();
@@ -1694,12 +1711,14 @@ fn main() {
                     }
                 }
             }
+            let write_start = std::time::Instant::now();
             write_campaigns(&cd.join("part-00000.parquet"), cid, ch, day, cols);
+            tick(9, write_start);
         },
     );
     lap("write");
     if timing {
-        for i in 0..8 {
+        for i in 0..10 {
             eprintln!("  {:>10} {:.3}s", TN[i], T[i].load(Relaxed) as f64 / 1e9);
         }
     }
