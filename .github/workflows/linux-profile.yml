@@ -20,13 +20,13 @@ jobs:
         run: |
           export CARGO_TARGET_DIR="$RUNNER_TEMP/shared-target"
           mkdir -p "$RUNNER_TEMP/binaries"
-          for version in baseline grouped avx2; do
+          for version in baseline avx2 lazy; do
             if [ "$version" = baseline ]; then
               revision=e0ec4042aa64cc514bfcd4c892a696f2360d8e86
-            elif [ "$version" = grouped ]; then
-              revision=f43b27d2d41c48fca5e66d550687c7b2671d85e6
-            else
+            elif [ "$version" = avx2 ]; then
               revision=82e5bd0eac2b2dda97dba4323c3cf3d83817c8ae
+            else
+              revision=f9b52a3da4b3e03205e8c81797b241c43edd89ad
             fi
             git worktree add --detach "$RUNNER_TEMP/$version" "$revision"
             (cd "$RUNNER_TEMP/$version" && cargo +1.97.0 build --release --locked)
@@ -43,11 +43,11 @@ jobs:
           generate="$RUNNER_TEMP/official/generator/target/release/generate"
           "$generate" --seed 1 --events 1000000 --clicks 250000 --output "$RUNNER_TEMP/dev"
           answer=$(find "$RUNNER_TEMP/answer" -name user_daily.csv -printf '%h' -quit)
-          for version in baseline grouped avx2; do
+          for version in baseline avx2 lazy; do
             DATA_DIR="$RUNNER_TEMP/dev" OUTPUT_DIR="$RUNNER_TEMP/dev-$version" "$RUNNER_TEMP/binaries/$version"
             python scripts/compare.py "$RUNNER_TEMP/dev-$version" "$answer"
           done
-          "$generate" --seed 42 --events 5000000 --clicks 1250000 --output "$RUNNER_TEMP/data"
+          "$generate" --seed 42 --events 20000000 --clicks 5000000 --output "$RUNNER_TEMP/data"
       - name: Measure the whole pipeline
         shell: python
         run: |
@@ -58,11 +58,12 @@ jobs:
           import subprocess
           import time
           root = Path(os.environ["RUNNER_TEMP"])
+          print(f"CPU threads reported: {os.cpu_count()}", flush=True)
           times = {}
           lines = []
-          for threads in sorted({1, os.cpu_count()}):
+          for threads in sorted({1, 2, 4, 8}):
               for repeat in range(6):
-                  versions = ["baseline", "grouped", "avx2"]
+                  versions = ["baseline", "avx2", "lazy"]
                   if repeat % 2:
                       versions.reverse()
                   for version in versions:
@@ -79,7 +80,7 @@ jobs:
                       lines.append(result.stderr)
                       print(lines[-2], flush=True)
                       print(result.stderr, flush=True)
-              for candidate in ("grouped", "avx2"):
+              for candidate in ("avx2", "lazy"):
                   subprocess.run(["python", "scripts/compare.py",
                                   str(root / "out-baseline"), str(root / f"out-{candidate}")], check=True)
           summary = {key: {"median": statistics.median(values), "runs": values}
@@ -88,7 +89,7 @@ jobs:
           print(text)
           (root / "profile.txt").write_text("\n".join(lines) + "\n" + text)
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as handle:
-              handle.write("Official generator, seed 42: five million events and 1.25 million clicks.\n\n")
+              handle.write("Official generator, seed 42: twenty million events and five million clicks.\n\n")
               handle.write("Competition hardware and hidden seeds may differ.\n\n")
               handle.write("~~~json\n" + text + "\n~~~\n")
       - uses: actions/upload-artifact@v4
