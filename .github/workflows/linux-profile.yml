@@ -31,40 +31,21 @@ jobs:
             cp "$CARGO_TARGET_DIR/release/shopping-sessions" "$RUNNER_TEMP/binaries/$version"
             python scripts/run_fixtures.py fixtures -- "$RUNNER_TEMP/binaries/$version"
           done
-      - name: Generate benchmark inputs
-        shell: python
+      - name: Generate official benchmark inputs and check the dev answer
         run: |
-          import datetime as dt
-          import json
-          import os
-          from pathlib import Path
-          root = Path(os.environ["RUNNER_TEMP"]) / "data"
-          root.mkdir()
-          for table in ("events", "clicks", "links"):
-              (root / table).mkdir()
-          (root / "manifest.json").write_text(json.dumps({
-              "window_start": "2026-10-01T00:00:00Z",
-              "window_end": "2026-10-15T00:00:00Z"}))
-          (root / "products.csv").write_text(
-              "product_id,category\n" + "".join(f"p{i},cat{i % 20}\n" for i in range(10000)))
-          (root / "campaigns.csv").write_text(
-              "campaign_id,channel\n" + "".join(f"c_{i},search\n" for i in range(100)))
-          (root / "links/part.csv").write_text(
-              "user_id_a,user_id_b\n" + "".join(f"alias{i},u{i}\n" for i in range(10000)))
-          day = dt.datetime(2026, 10, 1, tzinfo=dt.timezone.utc)
-          stamps = [(day + dt.timedelta(seconds=i * 60)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(20160)]
-          with (root / "events/part.csv").open("w") as handle:
-              handle.write("event_id,user_id,ts,ingest_ts,event_type,product_id,price_cents\n")
-              for i in range(5000000):
-                  n = i - 1 if i % 20 == 19 else i
-                  t = stamps[(n * 7919) % len(stamps)]
-                  event = "purchase" if n % 10 == 0 else "view"
-                  user = f"alias{n % 10000}" if n % 7 == 0 else f"u{n % 50000}"
-                  handle.write(f"e{n},{user},{t},{t},{event},p{n % 10000},1000\n")
-          with (root / "clicks/part.csv").open("w") as handle:
-              handle.write("click_id,user_id,campaign_id,ts\n")
-              for i in range(1250000):
-                  handle.write(f"k{i},u{i % 50000},c_{i % 100},{stamps[(i * 7919) % len(stamps)]}\n")
+          curl --fail --location --retry 3 https://www.joinbuilders.org/buildathon/tracks/shopping-sessions/files/generator.zip -o "$RUNNER_TEMP/generator.zip"
+          curl --fail --location --retry 3 https://www.joinbuilders.org/buildathon/tracks/shopping-sessions/files/dev-answer.zip -o "$RUNNER_TEMP/dev-answer.zip"
+          unzip -q "$RUNNER_TEMP/generator.zip" -d "$RUNNER_TEMP/official"
+          unzip -q "$RUNNER_TEMP/dev-answer.zip" -d "$RUNNER_TEMP/answer"
+          (cd "$RUNNER_TEMP/official/generator" && cargo +1.97.0 build --release --locked)
+          generate="$RUNNER_TEMP/official/generator/target/release/generate"
+          "$generate" --seed 1 --events 1000000 --clicks 250000 --output "$RUNNER_TEMP/dev"
+          answer=$(find "$RUNNER_TEMP/answer" -name user_daily.csv -printf '%h' -quit)
+          for version in baseline grouped; do
+            DATA_DIR="$RUNNER_TEMP/dev" OUTPUT_DIR="$RUNNER_TEMP/dev-$version" "$RUNNER_TEMP/binaries/$version"
+            python scripts/compare.py "$RUNNER_TEMP/dev-$version" "$answer"
+          done
+          "$generate" --seed 42 --events 5000000 --clicks 1250000 --output "$RUNNER_TEMP/data"
       - name: Measure the whole pipeline
         shell: python
         run: |
@@ -104,8 +85,8 @@ jobs:
           print(text)
           (root / "profile.txt").write_text("\n".join(lines) + "\n" + text)
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as handle:
-              handle.write("Five million generated events and 1.25 million clicks.\n\n")
-              handle.write("Synthetic workload. Competition hardware and inputs may differ.\n\n")
+              handle.write("Official generator, seed 42: five million events and 1.25 million clicks.\n\n")
+              handle.write("Competition hardware and hidden seeds may differ.\n\n")
               handle.write("~~~json\n" + text + "\n~~~\n")
       - uses: actions/upload-artifact@v4
         with:
