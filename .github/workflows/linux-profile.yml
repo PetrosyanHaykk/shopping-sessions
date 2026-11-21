@@ -46,6 +46,24 @@ jobs:
             python scripts/compare.py "$RUNNER_TEMP/dev-$version" "$answer"
           done
           "$generate" --seed 42 --events 20000000 --clicks 5000000 --output "$RUNNER_TEMP/data"
+      - name: Build profile-guided optimized baseline
+        run: |
+          rustup component add llvm-tools-preview --toolchain 1.97.0
+          mkdir -p "$RUNNER_TEMP/pgo-profiles"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/pgo-target"
+          source="$RUNNER_TEMP/baseline/src/main.rs"
+          python -c 'from pathlib import Path; import sys; p=Path(sys.argv[1]); s=p.read_text(); assert "unsafe { libc::_exit(0) };" in s; p.write_text(s.replace("unsafe { libc::_exit(0) };", "std::process::exit(0);"))' "$source"
+          (cd "$RUNNER_TEMP/baseline" && RUSTFLAGS="-Cprofile-generate=$RUNNER_TEMP/pgo-profiles" cargo +1.97.0 build --release --locked)
+          LLVM_PROFILE_FILE="$RUNNER_TEMP/pgo-profiles/%m-%p.profraw" DATA_DIR="$RUNNER_TEMP/dev" OUTPUT_DIR="$RUNNER_TEMP/pgo-training-out" NCPU=8 "$CARGO_TARGET_DIR/release/shopping-sessions"
+          profdata="$(rustc +1.97.0 --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-profdata"
+          "$profdata" merge -o "$RUNNER_TEMP/merged.profdata" "$RUNNER_TEMP/pgo-profiles"
+          git -C "$RUNNER_TEMP/baseline" restore -- src/main.rs
+          (cd "$RUNNER_TEMP/baseline" && RUSTFLAGS="-Cprofile-use=$RUNNER_TEMP/merged.profdata" cargo +1.97.0 build --release --locked)
+          cp "$CARGO_TARGET_DIR/release/shopping-sessions" "$RUNNER_TEMP/binaries/pgo"
+          python scripts/run_fixtures.py fixtures -- "$RUNNER_TEMP/binaries/pgo"
+          DATA_DIR="$RUNNER_TEMP/dev" OUTPUT_DIR="$RUNNER_TEMP/dev-pgo" "$RUNNER_TEMP/binaries/pgo"
+          answer=$(find "$RUNNER_TEMP/answer" -name user_daily.csv -printf '%h' -quit)
+          python scripts/compare.py "$RUNNER_TEMP/dev-pgo" "$answer"
       - name: Measure the whole pipeline
         shell: python
         run: |
@@ -61,7 +79,7 @@ jobs:
           lines = []
           for threads in sorted({8}):
               for repeat in range(6):
-                  versions = ["baseline", "cached"]
+                  versions = ["baseline", "cached", "pgo"]
                   if repeat % 2:
                       versions.reverse()
                   for version in versions:
@@ -78,7 +96,7 @@ jobs:
                       lines.append(result.stderr)
                       print(lines[-2], flush=True)
                       print(result.stderr, flush=True)
-              for candidate in ("cached",):
+              for candidate in ("cached", "pgo"):
                   subprocess.run(["python", "scripts/compare.py",
                                   str(root / "out-baseline"), str(root / f"out-{candidate}")], check=True)
           summary = {key: {"median": statistics.median(values), "runs": values}
