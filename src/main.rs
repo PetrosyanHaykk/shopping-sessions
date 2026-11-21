@@ -77,16 +77,37 @@ fn h64(b: &[u8]) -> u64 {
     const P0: u64 = 0xa076_1d64_78bd_642f;
     const P1: u64 = 0xe703_7ed1_a0b4_28db;
     const P2: u64 = 0x8ebc_6af0_9c88_c6e3;
-    let mut h = P0 ^ (b.len() as u64).wrapping_mul(P2);
-    let mut c = b.chunks_exact(8);
-    for w in &mut c {
-        h = mum(h ^ u64::from_le_bytes(w.try_into().unwrap()), P1);
+    #[inline(always)]
+    fn r8(b: &[u8], i: usize) -> u64 {
+        u64::from_le_bytes(b[i..i + 8].try_into().unwrap())
     }
-    let r = c.remainder();
-    let mut t = [0u8; 8];
-    t[..r.len()].copy_from_slice(r);
-    h = mum(h ^ u64::from_le_bytes(t) ^ P2, P1 ^ (r.len() as u64));
-    mum(h, P2)
+    #[inline(always)]
+    fn r4(b: &[u8], i: usize) -> u64 {
+        u32::from_le_bytes(b[i..i + 4].try_into().unwrap()) as u64
+    }
+    let n = b.len();
+    let mut h = P0 ^ (n as u64).wrapping_mul(P2);
+    // (a, c) together cover every byte (overlapping reads, no copies)
+    let (a, c) = if n <= 16 {
+        if n >= 8 {
+            (r8(b, 0), r8(b, n - 8))
+        } else if n >= 4 {
+            (r4(b, 0), r4(b, n - 4))
+        } else if n > 0 {
+            (((b[0] as u64) << 16) | ((b[n >> 1] as u64) << 8) | b[n - 1] as u64, 0)
+        } else {
+            (0, 0)
+        }
+    } else {
+        let mut i = 0;
+        while i + 16 < n {
+            h = mum(r8(b, i) ^ P1, r8(b, i + 8) ^ h);
+            i += 16;
+        }
+        (r8(b, n - 16), r8(b, n - 8))
+    };
+    h = mum(a ^ P1, c ^ h);
+    mum(h ^ P1, P2 ^ n as u64)
 }
 #[inline]
 fn bucket(h: u64) -> usize {
@@ -100,7 +121,7 @@ fn load(path: &Path) -> S {
     if len == 0 {
         return &[];
     }
-    let m = unsafe { Mmap::map(&f) }.expect("mmap");
+    let m = unsafe { memmap2::MmapOptions::new().populate().map(&f) }.expect("mmap");
     let m: &'static Mmap = Box::leak(Box::new(m));
     &m[..]
 }
@@ -303,81 +324,96 @@ fn byte(x: u64, i: u32) -> i64 {
 #[inline]
 fn parse_ts_c(f: &[u8], cache: &mut TsCache) -> Option<i64> {
     let n = f.len();
-    if n == 20 || n == 25 {
-        // "YYYY-MM-DDTHH:MM:SS" then "Z" or "+HH:MM"
-        let a = ld8(f, 0); // YYYY-MM-
-        let b = ld8(f, 8); // DDTHH:MM
-        let c = ld8(f, n - 8);
-        // separators: a[4]='-', a[7]='-', b[2]='T', b[5]=':', f[16]=':'
-        const SA: u64 = 0xFF00_00FF_0000_0000;
-        const SB: u64 = 0x0000_FF00_00FF_0000;
-        if a & SA == 0x2D00_002D_0000_0000 && b & SB == 0x0000_3A00_0054_0000 && f[16] == b':' {
-            if !digits_at(a, 0x00FF_FF00_FFFF_FFFF) || !digits_at(b, 0xFFFF_00FF_FF00_FFFF) {
-                return None;
-            }
-            let off_ms = if n == 20 {
-                if f[19] != b'Z' || !f[17].is_ascii_digit() || !f[18].is_ascii_digit() {
-                    return None;
-                }
-                0
-            } else {
-                // c = f[17..25] = "SS+HH:MM"
-                const SC: u64 = 0x0000_FF00_0000_0000;
-                if c & SC != 0x0000_3A00_0000_0000 || !digits_at(c, 0xFFFF_00FF_FF00_FFFF) {
-                    return None;
-                }
-                let sign = f[19];
-                if sign != b'+' && sign != b'-' {
-                    return None;
-                }
-                let oh = byte(c, 3) * 10 + byte(c, 4);
-                let om = byte(c, 6) * 10 + byte(c, 7);
-                if oh > 23 || om > 59 {
-                    return None;
-                }
-                let o = (oh * 3600 + om * 60) * 1000;
-                if sign == b'+' {
-                    o
-                } else {
-                    -o
-                }
-            };
-            let y = byte(a, 0) * 1000 + byte(a, 1) * 100 + byte(a, 2) * 10 + byte(a, 3);
-            let mo = byte(a, 5) * 10 + byte(a, 6);
-            let d = byte(b, 0) * 10 + byte(b, 1);
-            let h = byte(b, 3) * 10 + byte(b, 4);
-            let mi = byte(b, 6) * 10 + byte(b, 7);
-            let s = (f[17] - b'0') as i64 * 10 + (f[18] - b'0') as i64;
-            if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || s > 59 {
-                return None;
-            }
-            let days = if (Y0..Y0 + NY).contains(&y) {
-                let v = cache.tab[((y - Y0) * 372 + (mo - 1) * 31 + (d - 1)) as usize];
-                if v < 0 {
-                    return None;
-                }
-                v as i64
-            } else {
-                let dim = match mo {
-                    1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-                    4 | 6 | 9 | 11 => 30,
-                    _ => {
-                        if leap(y) {
-                            29
-                        } else {
-                            28
-                        }
-                    }
-                };
-                if d > dim {
-                    return None;
-                }
-                days_from_civil(y, mo, d)
-            };
-            return Some((days * 86_400 + h * 3600 + mi * 60 + s) * 1000 - off_ms);
-        }
+    if n != 20 && n != 25 {
+        return parse_f3_fast(f);
     }
-    parse_f3_fast(f)
+    // n >= 20: unchecked 8-byte loads are in bounds
+    let p = f.as_ptr();
+    let (a, b, t) = unsafe {
+        (
+            (p as *const u64).read_unaligned(),        // "YYYY-MM-"
+            (p.add(8) as *const u64).read_unaligned(), // "DDTHH:MM"
+            (p.add(12) as *const u64).read_unaligned(), // "HH:MM:SS" (bytes 12..20)
+        )
+    };
+    // separators '-' at 4,7; 'T' at 10; ':' at 13,16
+    if a & 0xFF00_00FF_0000_0000 != 0x2D00_002D_0000_0000
+        || b & 0x0000_FF00_00FF_0000 != 0x0000_3A00_0054_0000
+        || (t >> 32) & 0xFF != 0x3A
+    {
+        return parse_f3_fast(f); // e.g. an all-digit F3 of length 20 or 25
+    }
+    // digits: a bytes 0-3,5,6; b bytes 0,1,3,4,6,7; t bytes 5,6 (= f[17], f[18])
+    if !digits_at(a, 0x00FF_FF00_FFFF_FFFF) || !digits_at(b, 0xFFFF_00FF_FF00_FFFF) || !digits_at(t, 0x00FF_FF00_0000_0000) {
+        return None;
+    }
+    // non-digit bytes are replaced by '0' first so the subtraction never borrows across bytes
+    let z = |x: u64, m: u64| ((x & m) | (0x3030_3030_3030_3030 & !m)).wrapping_sub(0x3030_3030_3030_3030);
+    let da = z(a, 0x00FF_FF00_FFFF_FFFF);
+    let db = z(b, 0xFFFF_00FF_FF00_FFFF);
+    let dt = z(t, 0x00FF_FF00_0000_0000);
+    let g = |x: u64, i: u32| ((x >> (8 * i)) & 0xff) as i64;
+    let y = g(da, 0) * 1000 + g(da, 1) * 100 + g(da, 2) * 10 + g(da, 3);
+    let mo = g(da, 5) * 10 + g(da, 6);
+    let d = g(db, 0) * 10 + g(db, 1);
+    let h = g(db, 3) * 10 + g(db, 4);
+    let mi = g(db, 6) * 10 + g(db, 7);
+    let sec = g(dt, 5) * 10 + g(dt, 6);
+    let off_ms = if n == 20 {
+        if f[19] != b'Z' {
+            return None;
+        }
+        0
+    } else {
+        // f[19] sign, f[20..22] HH, f[22] ':', f[23..25] MM
+        let o = unsafe { (p.add(17) as *const u64).read_unaligned() }; // "SS+HH:MM"
+        if (o >> 40) & 0xFF != 0x3A || !digits_at(o, 0xFFFF_00FF_FF00_0000) {
+            return None;
+        }
+        let sign = f[19];
+        if sign != b'+' && sign != b'-' {
+            return None;
+        }
+        let dz = z(o, 0xFFFF_00FF_FF00_0000);
+        let oh = g(dz, 3) * 10 + g(dz, 4);
+        let om = g(dz, 6) * 10 + g(dz, 7);
+        if oh > 23 || om > 59 {
+            return None;
+        }
+        let v = (oh * 3600 + om * 60) * 1000;
+        if sign == b'+' {
+            v
+        } else {
+            -v
+        }
+    };
+    if h > 23 || mi > 59 || sec > 59 || mo.wrapping_sub(1) as u64 > 11 || d.wrapping_sub(1) as u64 > 30 {
+        return None;
+    }
+    let days = if (y - Y0) as u64 >= NY as u64 {
+        let dim = match mo {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            _ => {
+                if leap(y) {
+                    29
+                } else {
+                    28
+                }
+            }
+        };
+        if d > dim {
+            return None;
+        }
+        days_from_civil(y, mo, d)
+    } else {
+        let v = unsafe { *cache.tab.get_unchecked(((y - Y0) * 372 + (mo - 1) * 31 + (d - 1)) as usize) };
+        if v < 0 {
+            return None;
+        }
+        v as i64
+    };
+    Some((days * 86_400 + h * 3600 + mi * 60 + sec) * 1000 - off_ms)
 }
 
 /// F3: ASCII digits only, leading zeros allowed; a value too big for i64 is just out of the window.
@@ -732,19 +768,46 @@ struct Ev {
     pc: u32,     // price << 8 | category rank (price 0 unless a purchase)
 }
 
+/// n slots of plain data in fresh, pre-faulted memory (one mmap + populate instead of page
+/// faults one by one). Never unmapped: the process exits right after writing its output.
+fn populated<T: Copy + 'static>(n: usize) -> &'static mut [T] {
+    let bytes = (n * std::mem::size_of::<T>()).max(4096);
+    unsafe {
+        let p = libc::mmap(
+            std::ptr::null_mut(),
+            bytes,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        );
+        assert!(p != libc::MAP_FAILED, "mmap failed");
+        libc::madvise(p, bytes, libc::MADV_HUGEPAGE);
+        if libc::madvise(p, bytes, 23 /* MADV_POPULATE_WRITE */) != 0 {
+            // older kernels: touch every page
+            let b = p as *mut u8;
+            let mut i = 0;
+            while i < bytes {
+                std::ptr::write_volatile(b.add(i), 0);
+                i += 4096;
+            }
+        }
+        std::slice::from_raw_parts_mut(p as *mut T, n)
+    }
+}
+
 /// NB buckets carved out of one big allocation (huge-page friendly: few page faults), with a
 /// per-bucket overflow Vec in case a bucket outgrows its share.
-struct Buckets<T: Copy> {
-    arena: Vec<T>,
+struct Buckets<T: Copy + 'static> {
+    arena: &'static mut [T],
     cap: usize,
     len: Vec<u32>,
     over: Vec<Vec<T>>,
 }
-impl<T: Copy> Buckets<T> {
+impl<T: Copy + 'static> Buckets<T> {
     fn new(total_est: usize) -> Self {
         let cap = total_est.div_ceil(NB) + 64;
-        let mut arena = Vec::with_capacity(cap * NB);
-        unsafe { arena.set_len(cap * NB) }; // T: Copy plain data; slots are written before read
+        let arena = populated::<T>(cap * NB);
         Buckets { arena, cap, len: vec![0; NB], over: (0..NB).map(|_| Vec::new()).collect() }
     }
     #[inline(always)]
@@ -771,6 +834,91 @@ impl<T: Copy> Buckets<T> {
         let (a, o) = self.parts(b);
         v.extend_from_slice(a);
         v.extend_from_slice(o);
+    }
+}
+
+/// Per-bucket map: person hash -> dense index (open addressing, grows at load 1/2).
+struct PersonTable {
+    keys: Vec<u64>, // 0 = empty (hash 0 is remapped to 1)
+    vals: Vec<u32>,
+    mask: usize,
+}
+impl PersonTable {
+    fn new() -> Self {
+        PersonTable { keys: vec![0; 1024], vals: vec![0; 1024], mask: 1023 }
+    }
+    #[inline(always)]
+    fn k(nh: u64) -> u64 {
+        nh.max(1)
+    }
+    /// Assigns each event its person's index; returns the number of persons.
+    fn build(&mut self, evs: &[PE], out: &mut Vec<u32>) -> usize {
+        let want = (evs.len() / 8).max(512).next_power_of_two() * 2;
+        if self.keys.len() != want {
+            self.keys = vec![0; want];
+            self.vals = vec![0; want];
+            self.mask = want - 1;
+        } else {
+            self.keys.iter_mut().for_each(|x| *x = 0);
+        }
+        out.clear();
+        out.reserve(evs.len());
+        let mut n = 0usize;
+        for e in evs {
+            if 2 * (n + 1) > self.keys.len() {
+                self.grow();
+            }
+            let k = Self::k(e.nh);
+            let mut p = (k as usize) & self.mask;
+            loop {
+                let x = self.keys[p];
+                if x == k {
+                    out.push(self.vals[p]);
+                    break;
+                }
+                if x == 0 {
+                    self.keys[p] = k;
+                    self.vals[p] = n as u32;
+                    out.push(n as u32);
+                    n += 1;
+                    break;
+                }
+                p = (p + 1) & self.mask;
+            }
+        }
+        n
+    }
+    fn grow(&mut self) {
+        let (ok, ov) = (std::mem::take(&mut self.keys), std::mem::take(&mut self.vals));
+        let cap = ok.len() * 2;
+        self.keys = vec![0; cap];
+        self.vals = vec![0; cap];
+        self.mask = cap - 1;
+        for (k, v) in ok.into_iter().zip(ov) {
+            if k != 0 {
+                let mut p = (k as usize) & self.mask;
+                while self.keys[p] != 0 {
+                    p = (p + 1) & self.mask;
+                }
+                self.keys[p] = k;
+                self.vals[p] = v;
+            }
+        }
+    }
+    #[inline(always)]
+    fn get(&self, nh: u64) -> u32 {
+        let k = Self::k(nh);
+        let mut p = (k as usize) & self.mask;
+        loop {
+            let x = self.keys[p];
+            if x == k {
+                return self.vals[p];
+            }
+            if x == 0 {
+                return u32::MAX;
+            }
+            p = (p + 1) & self.mask;
+        }
     }
 }
 
@@ -891,7 +1039,7 @@ fn main() {
                 .map(|grp| {
                     let t0 = std::time::Instant::now();
                     let bytes: usize = grp.iter().map(|&i| ev_chunks[i].data.len()).sum();
-                    let mut acc: Buckets<Ev> = Buckets::new(bytes / 62);
+                    let mut acc: Buckets<Ev> = Buckets::new(bytes / 70);
                     let mut c1 = TsCache::new();
                     let mut pend: [(Ev, u64); BATCH] = [(Ev { eh: 0, nh: 0, name: 0, ingest: 0, ts: 0, pc: 0 }, 0); BATCH];
                     let mut np = 0usize;
@@ -923,13 +1071,22 @@ fn main() {
                                     Some(t) if t >= ws && t < we => t,
                                     _ => break 'v,
                                 };
-                                let price = match f[4] {
-                                    b"view" | b"cart" => 0,
-                                    b"purchase" => match parse_price(f[6]) {
+                                let t = f[4];
+                                let price = if t.len() == 4 && {
+                                    let w = u32::from_le_bytes([t[0], t[1], t[2], t[3]]);
+                                    w == u32::from_le_bytes(*b"view") || w == u32::from_le_bytes(*b"cart")
+                                } {
+                                    0
+                                } else if t.len() == 8
+                                    && u64::from_le_bytes([t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7]])
+                                        == u64::from_le_bytes(*b"purchase")
+                                {
+                                    match parse_price(f[6]) {
                                         Some(p) => p,
                                         None => break 'v,
-                                    },
-                                    _ => break 'v,
+                                    }
+                                } else {
+                                    break 'v;
                                 };
                                 if ingest - ts > DAY {
                                     break 'v; // late: dropped if this copy is the kept one
@@ -964,7 +1121,7 @@ fn main() {
                 .map(|grp| {
                     let t0 = std::time::Instant::now();
                     let bytes: usize = grp.iter().map(|&i| ck_chunks[i].data.len()).sum();
-                    let mut acc: Buckets<PC> = Buckets::new(bytes / 38);
+                    let mut acc: Buckets<PC> = Buckets::new(bytes / 43);
                     let mut c1 = TsCache::new();
                     let mut pend: [(PC, u64); BATCH] = [(PC { nh: 0, cid: 0, ts: 0, camp: 0 }, 0); BATCH];
                     let mut np = 0usize;
@@ -1070,14 +1227,20 @@ fn main() {
             acc
         })
         .collect();
-    drop(ev_parts);
+    std::mem::forget(ev_parts);
     lap("dedup");
 
     // ------------------------------------------------ per person bucket: sessions, credit, assists
     let width = ncamp + 1;
+    let ud = out.join("user_daily");
+    let cd = out.join("campaign_daily");
+    std::fs::create_dir_all(&ud).unwrap();
+    std::fs::create_dir_all(&cd).unwrap();
+    // each task writes its own user_daily part as soon as it is done (no barrier before writing)
     let results: Vec<(Vec<UserRow>, Vec<[u64; 4]>)> = bgroups
         .par_iter()
-        .map(|bs| {
+        .enumerate()
+        .map(|(g, bs)| {
             let mut camp = vec![[0u64; 4]; width * ndays];
             let mut wcnt = vec![0u32; width];
             let mut wpos = vec![0u32; width];
@@ -1087,6 +1250,14 @@ fn main() {
             let mut touched: Vec<u16> = Vec::new();
             let mut evs: Vec<PE> = Vec::new();
             let mut cks: Vec<PC> = Vec::new();
+            let mut tmp: Vec<PE> = Vec::new();
+            let mut ctmp: Vec<PC> = Vec::new();
+            let mut ptab = PersonTable::new();
+            let mut pidx: Vec<u32> = Vec::new();
+            let mut cidx: Vec<u32> = Vec::new();
+            let mut pcount: Vec<u32> = Vec::new();
+            let mut ccount: Vec<u32> = Vec::new();
+            let mut pos: Vec<u32> = Vec::new();
             for &b in bs {
                 let t = std::time::Instant::now();
                 evs.clear();
@@ -1098,40 +1269,72 @@ fn main() {
                     p.extend_into(b, &mut cks);
                 }
                 let t = tick(5, t);
-                evs.sort_unstable_by_key(|e| (e.nh, e.ts));
-                cks.sort_unstable_by_key(|c| (c.nh, c.ts));
-                {
-                    // equal (person, ts): order by click_id bytes (credit tie-break)
-                    let mut i = 0;
-                    while i + 1 < cks.len() {
-                        let mut j = i + 1;
-                        while j < cks.len() && cks[j].nh == cks[i].nh && cks[j].ts == cks[i].ts {
-                            j += 1;
-                        }
-                        if j - i > 1 {
-                            cks[i..j].sort_unstable_by(|a, b| unpack(a.cid).cmp(unpack(b.cid)));
-                        }
-                        i = j;
+                // group by person with a counting sort on a dense per-bucket person index,
+                // then order each person's events by ts and clicks by (ts, click_id)
+                let np = ptab.build(&evs, &mut pidx);
+                pcount.clear();
+                pcount.resize(np + 1, 0);
+                for &x in &pidx {
+                    pcount[x as usize + 1] += 1;
+                }
+                for x in 0..np {
+                    pcount[x + 1] += pcount[x];
+                }
+                tmp.clear();
+                tmp.reserve(evs.len());
+                unsafe { tmp.set_len(evs.len()) };
+                pos.clear();
+                pos.extend_from_slice(&pcount[..np]);
+                for (e, &x) in evs.iter().zip(pidx.iter()) {
+                    let k = &mut pos[x as usize];
+                    tmp[*k as usize] = *e;
+                    *k += 1;
+                }
+                std::mem::swap(&mut evs, &mut tmp);
+                for x in 0..np {
+                    let r = &mut evs[pcount[x] as usize..pcount[x + 1] as usize];
+                    if r.len() > 1 {
+                        r.sort_unstable_by_key(|e| e.ts);
+                    }
+                }
+                // clicks of persons without surviving events can never credit anything: skip them
+                cidx.clear();
+                ccount.clear();
+                ccount.resize(np + 1, 0);
+                for c in &cks {
+                    let x = ptab.get(c.nh);
+                    cidx.push(x);
+                    if x != u32::MAX {
+                        ccount[x as usize + 1] += 1;
+                    }
+                }
+                for x in 0..np {
+                    ccount[x + 1] += ccount[x];
+                }
+                ctmp.clear();
+                ctmp.reserve(ccount[np] as usize);
+                unsafe { ctmp.set_len(ccount[np] as usize) };
+                pos.clear();
+                pos.extend_from_slice(&ccount[..np]);
+                for (c, &x) in cks.iter().zip(cidx.iter()) {
+                    if x != u32::MAX {
+                        let k = &mut pos[x as usize];
+                        ctmp[*k as usize] = *c;
+                        *k += 1;
+                    }
+                }
+                std::mem::swap(&mut cks, &mut ctmp);
+                for x in 0..np {
+                    let r = &mut cks[ccount[x] as usize..ccount[x + 1] as usize];
+                    if r.len() > 1 {
+                        r.sort_unstable_by(|a, b| a.ts.cmp(&b.ts).then_with(|| unpack(a.cid).cmp(unpack(b.cid))));
                     }
                 }
                 let t = tick(6, t);
-                let mut i = 0;
-                let mut ci = 0;
-                while i < evs.len() {
-                    let nh = evs[i].nh;
+                for x in 0..np {
+                    let (i, j) = (pcount[x] as usize, pcount[x + 1] as usize);
                     let name = unpack(evs[i].name);
-                    let mut j = i;
-                    while j < evs.len() && evs[j].nh == nh {
-                        j += 1;
-                    }
-                    while ci < cks.len() && cks[ci].nh < nh {
-                        ci += 1;
-                    }
-                    let mut cj = ci;
-                    while cj < cks.len() && cks[cj].nh == nh {
-                        cj += 1;
-                    }
-                    let pc = &cks[ci..cj];
+                    let pc = &cks[ccount[x] as usize..ccount[x + 1] as usize];
                     let (mut lo, mut hi) = (0usize, 0usize); // clicks with s-WEEK <= ts <= s
                     let mut cur: Option<UserRow> = None;
                     let mut k = i;
@@ -1229,14 +1432,15 @@ fn main() {
                         wcnt[c as usize] = 0;
                     }
                     active.clear();
-                    i = j;
                 }
                 tick(7, t);
             }
-            (rows, camp)
+            let done = (rows, camp);
+            write_users(&ud.join(format!("part-{g:05}.parquet")), std::slice::from_ref(&done), &cats);
+            (Vec::new(), done.1)
         })
         .collect();
-    drop(pe_parts);
+    std::mem::forget(pe_parts);
     lap("sessions");
 
     // ------------------------------------------------ write
@@ -1248,17 +1452,11 @@ fn main() {
             }
         }
     }
-    let ud = out.join("user_daily");
-    let cd = out.join("campaign_daily");
-    std::fs::create_dir_all(&ud).unwrap();
-    std::fs::create_dir_all(&cd).unwrap();
     let cats = Arc::new(cats);
     let per = results.len().div_ceil(8).max(1);
     rayon::join(
         || {
-            results.par_chunks(per).enumerate().for_each(|(g, part)| {
-                write_users(&ud.join(format!("part-{g:05}.parquet")), part, &cats);
-            })
+            let _ = per; // user_daily parts were written by the session tasks
         },
         || {
             let mut cid: Vec<String> = Vec::new();
@@ -1293,6 +1491,8 @@ fn main() {
             eprintln!("  {:>10} {:.3}s", TN[i], T[i].load(Relaxed) as f64 / 1e9);
         }
     }
+    // all output files are closed and flushed; skip freeing gigabytes of memory one by one
+    unsafe { libc::_exit(0) };
 }
 
 fn top_of(catsum: &mut [u64], touched: &mut Vec<u16>) -> Option<u16> {
