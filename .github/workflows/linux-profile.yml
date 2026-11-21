@@ -20,11 +20,13 @@ jobs:
         run: |
           export CARGO_TARGET_DIR="$RUNNER_TEMP/shared-target"
           mkdir -p "$RUNNER_TEMP/binaries"
-          for version in baseline grouped; do
+          for version in baseline grouped avx2; do
             if [ "$version" = baseline ]; then
               revision=e0ec4042aa64cc514bfcd4c892a696f2360d8e86
-            else
+            elif [ "$version" = grouped ]; then
               revision=f43b27d2d41c48fca5e66d550687c7b2671d85e6
+            else
+              revision=82e5bd0eac2b2dda97dba4323c3cf3d83817c8ae
             fi
             git worktree add --detach "$RUNNER_TEMP/$version" "$revision"
             (cd "$RUNNER_TEMP/$version" && cargo +1.97.0 build --release --locked)
@@ -41,7 +43,7 @@ jobs:
           generate="$RUNNER_TEMP/official/generator/target/release/generate"
           "$generate" --seed 1 --events 1000000 --clicks 250000 --output "$RUNNER_TEMP/dev"
           answer=$(find "$RUNNER_TEMP/answer" -name user_daily.csv -printf '%h' -quit)
-          for version in baseline grouped; do
+          for version in baseline grouped avx2; do
             DATA_DIR="$RUNNER_TEMP/dev" OUTPUT_DIR="$RUNNER_TEMP/dev-$version" "$RUNNER_TEMP/binaries/$version"
             python scripts/compare.py "$RUNNER_TEMP/dev-$version" "$answer"
           done
@@ -60,7 +62,7 @@ jobs:
           lines = []
           for threads in sorted({1, os.cpu_count()}):
               for repeat in range(6):
-                  versions = ["baseline", "grouped"]
+                  versions = ["baseline", "grouped", "avx2"]
                   if repeat % 2:
                       versions.reverse()
                   for version in versions:
@@ -77,8 +79,9 @@ jobs:
                       lines.append(result.stderr)
                       print(lines[-2], flush=True)
                       print(result.stderr, flush=True)
-              subprocess.run(["python", "scripts/compare.py",
-                              str(root / "out-baseline"), str(root / "out-grouped")], check=True)
+              for candidate in ("grouped", "avx2"):
+                  subprocess.run(["python", "scripts/compare.py",
+                                  str(root / "out-baseline"), str(root / f"out-{candidate}")], check=True)
           summary = {key: {"median": statistics.median(values), "runs": values}
                      for key, values in times.items()}
           text = json.dumps(summary, indent=2)
