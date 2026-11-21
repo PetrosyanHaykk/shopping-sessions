@@ -768,9 +768,9 @@ struct Ev {
     pc: u32,     // price << 8 | category rank (price 0 unless a purchase)
 }
 
-/// n slots of plain data in fresh, pre-faulted memory (one mmap + populate instead of page
-/// faults one by one). Never unmapped: the process exits right after writing its output.
-fn populated<T: Copy + 'static>(n: usize) -> &'static mut [T] {
+/// Zero-filled slots backed on first use, so unused bucket capacity does not need prefaulting.
+/// Never unmapped: the process exits right after writing its output.
+fn mapped_zeroed<T: Copy + 'static>(n: usize) -> &'static mut [T] {
     let bytes = (n * std::mem::size_of::<T>()).max(4096);
     unsafe {
         let p = libc::mmap(
@@ -783,15 +783,6 @@ fn populated<T: Copy + 'static>(n: usize) -> &'static mut [T] {
         );
         assert!(p != libc::MAP_FAILED, "mmap failed");
         libc::madvise(p, bytes, libc::MADV_HUGEPAGE);
-        if libc::madvise(p, bytes, 23 /* MADV_POPULATE_WRITE */) != 0 {
-            // older kernels: touch every page
-            let b = p as *mut u8;
-            let mut i = 0;
-            while i < bytes {
-                std::ptr::write_volatile(b.add(i), 0);
-                i += 4096;
-            }
-        }
         std::slice::from_raw_parts_mut(p as *mut T, n)
     }
 }
@@ -807,7 +798,7 @@ struct Buckets<T: Copy + 'static> {
 impl<T: Copy + 'static> Buckets<T> {
     fn new(total_est: usize) -> Self {
         let cap = total_est.div_ceil(NB) + 64;
-        let arena = populated::<T>(cap * NB);
+        let arena = mapped_zeroed::<T>(cap * NB);
         Buckets { arena, cap, len: vec![0; NB], over: (0..NB).map(|_| Vec::new()).collect() }
     }
     #[inline(always)]
