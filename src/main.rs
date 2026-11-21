@@ -761,8 +761,7 @@ impl CampIndex {
 #[derive(Clone, Copy)]
 struct Ev {
     eh: u64,     // hash of event_id (identity for dedup)
-    nh: u64,     // hash of the person's name (identity of the person)
-    name: u64,   // packed person name
+    name: u64,   // packed original user ID; resolved to a person only for surviving events
     ingest: i64, // ingest_ts in ms
     ts: u32,     // ms since window_start; u32::MAX = invalid or late copy
     pc: u32,     // price << 8 | category rank (price 0 unless a purchase)
@@ -1041,20 +1040,6 @@ fn main() {
                     let bytes: usize = grp.iter().map(|&i| ev_chunks[i].data.len()).sum();
                     let mut acc: Buckets<Ev> = Buckets::new(bytes / 70);
                     let mut c1 = TsCache::new();
-                    let mut pend: [(Ev, u64); BATCH] = [(Ev { eh: 0, nh: 0, name: 0, ingest: 0, ts: 0, pc: 0 }, 0); BATCH];
-                    let mut np = 0usize;
-                    let flush = |pend: &[(Ev, u64)], acc: &mut Buckets<Ev>| {
-                        for &(mut e, uh) in pend {
-                            match links.get_hash_only(uh) {
-                                Some((name, nh)) => {
-                                    e.name = name;
-                                    e.nh = nh;
-                                }
-                                None => e.nh = uh,
-                            }
-                            acc.push(bucket(e.eh), e);
-                        }
-                    };
                     for &ci in grp {
                         let c = &ev_chunks[ci];
                         scan::scan::<7>(c.data, c.skip_header, |f| {
@@ -1062,7 +1047,7 @@ fn main() {
                                 return;
                             }
                             let ingest = parse_ts_c(f[3], &mut c1).unwrap_or(i64::MAX);
-                            let mut e = Ev { eh: h64(f[0]), nh: 0, name: 0, ingest, ts: u32::MAX, pc: 0 };
+                            let mut e = Ev { eh: h64(f[0]), name: 0, ingest, ts: u32::MAX, pc: 0 };
                             'v: {
                                 if f[1].is_empty() || f[5].is_empty() {
                                     break 'v;
@@ -1096,20 +1081,12 @@ fn main() {
                                     e.pc = (price << 8) | u32::from(prod.get(f[5]));
                                 }
                                 e.name = pack(f[1]);
-                                let uh = h64(f[1]);
-                                links.prefetch(uh);
-                                pend[np] = (e, uh);
-                                np += 1;
-                                if np == BATCH {
-                                    flush(&pend, &mut acc);
-                                    np = 0;
-                                }
+                                acc.push(bucket(e.eh), e);
                                 return;
                             }
                             acc.push(bucket(e.eh), e);
                         });
                     }
-                    flush(&pend[..np], &mut acc);
                     tick(0, t0);
                     acc
                 })
@@ -1181,6 +1158,13 @@ fn main() {
             let mut all: Vec<Ev> = Vec::new();
             let mut table: Vec<u32> = Vec::new();
             let mut win: Vec<bool> = Vec::new();
+            let mut pending = [PE { nh: 0, name: 0, ts: 0, pc: 0 }; BATCH];
+            let flush = |pending: &[PE], acc: &mut Buckets<PE>| {
+                for &event in pending {
+                    let (name, nh) = links.get_hash_only(event.nh).unwrap_or((event.name, event.nh));
+                    acc.push(bucket(nh), PE { name, nh, ..event });
+                }
+            };
             for &b in bs {
                 let t = std::time::Instant::now();
                 all.clear();
@@ -1218,11 +1202,20 @@ fn main() {
                         win[k as usize] = true;
                     }
                 }
+                let mut np = 0;
                 for (e, &w) in all.iter().zip(win.iter()) {
                     if w && e.ts != u32::MAX {
-                        acc.push(bucket(e.nh), PE { nh: e.nh, name: e.name, ts: e.ts, pc: e.pc });
+                        let nh = h64(unpack(e.name));
+                        links.prefetch(nh);
+                        pending[np] = PE { nh, name: e.name, ts: e.ts, pc: e.pc };
+                        np += 1;
+                        if np == BATCH {
+                            flush(&pending, &mut acc);
+                            np = 0;
+                        }
                     }
                 }
+                flush(&pending[..np], &mut acc);
                 tick(4, t);
             }
             acc
