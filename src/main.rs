@@ -852,8 +852,8 @@ impl PersonTable {
         nh.max(1)
     }
     /// Assigns each event its person's index; returns the number of persons.
-    fn build(&mut self, evs: &[PE], out: &mut Vec<u32>) -> usize {
-        let want = (evs.len() / 8).max(512).next_power_of_two() * 2;
+    fn build(&mut self, hashes: impl Iterator<Item = u64>, n_events: usize, out: &mut Vec<u32>) -> usize {
+        let want = (n_events / 8).max(512).next_power_of_two() * 2;
         if self.keys.len() != want {
             self.keys = vec![0; want];
             self.vals = vec![0; want];
@@ -862,13 +862,13 @@ impl PersonTable {
             self.keys.iter_mut().for_each(|x| *x = 0);
         }
         out.clear();
-        out.reserve(evs.len());
+        out.reserve(n_events);
         let mut n = 0usize;
-        for e in evs {
+        for nh in hashes {
             if 2 * (n + 1) > self.keys.len() {
                 self.grow();
             }
-            let k = Self::k(e.nh);
+            let k = Self::k(nh);
             let mut p = (k as usize) & self.mask;
             loop {
                 let x = self.keys[p];
@@ -1251,8 +1251,6 @@ fn main() {
             let mut touched: Vec<u16> = Vec::new();
             let mut evs: Vec<PE> = Vec::new();
             let mut cks: Vec<PC> = Vec::new();
-            let mut tmp: Vec<PE> = Vec::new();
-            let mut ctmp: Vec<PC> = Vec::new();
             let mut ptab = PersonTable::new();
             let mut pidx: Vec<u32> = Vec::new();
             let mut cidx: Vec<u32> = Vec::new();
@@ -1261,18 +1259,20 @@ fn main() {
             let mut pos: Vec<u32> = Vec::new();
             for &b in bs {
                 let t = std::time::Instant::now();
-                evs.clear();
-                for p in &pe_parts {
-                    p.extend_into(b, &mut evs);
-                }
-                cks.clear();
-                for p in &ck_parts {
-                    p.extend_into(b, &mut cks);
-                }
+                // Traverse source buckets in the same order as extend_into, without gathering copies.
+                let events = || pe_parts.iter().flat_map(|p| {
+                    let (a, o) = p.parts(b);
+                    a.iter().chain(o.iter())
+                });
+                let clicks = || ck_parts.iter().flat_map(|p| {
+                    let (a, o) = p.parts(b);
+                    a.iter().chain(o.iter())
+                });
+                let n_events = pe_parts.iter().map(|p| p.count(b)).sum();
                 let t = tick(5, t);
                 // group by person with a counting sort on a dense per-bucket person index,
                 // then order each person's events by ts and clicks by (ts, click_id)
-                let np = ptab.build(&evs, &mut pidx);
+                let np = ptab.build(events().map(|e| e.nh), n_events, &mut pidx);
                 pcount.clear();
                 pcount.resize(np + 1, 0);
                 for &x in &pidx {
@@ -1281,17 +1281,17 @@ fn main() {
                 for x in 0..np {
                     pcount[x + 1] += pcount[x];
                 }
-                tmp.clear();
-                tmp.reserve(evs.len());
-                unsafe { tmp.set_len(evs.len()) };
+                evs.clear();
+                evs.reserve(n_events);
                 pos.clear();
                 pos.extend_from_slice(&pcount[..np]);
-                for (e, &x) in evs.iter().zip(pidx.iter()) {
+                for (e, &x) in events().zip(pidx.iter()) {
                     let k = &mut pos[x as usize];
-                    tmp[*k as usize] = *e;
+                    evs.spare_capacity_mut()[*k as usize].write(*e);
                     *k += 1;
                 }
-                std::mem::swap(&mut evs, &mut tmp);
+                // Prefix sums assign every destination exactly once before exposing initialized elements.
+                unsafe { evs.set_len(n_events) };
                 for x in 0..np {
                     let r = &mut evs[pcount[x] as usize..pcount[x + 1] as usize];
                     if r.len() > 1 {
@@ -1302,7 +1302,7 @@ fn main() {
                 cidx.clear();
                 ccount.clear();
                 ccount.resize(np + 1, 0);
-                for c in &cks {
+                for c in clicks() {
                     let x = ptab.get(c.nh);
                     cidx.push(x);
                     if x != u32::MAX {
@@ -1312,19 +1312,19 @@ fn main() {
                 for x in 0..np {
                     ccount[x + 1] += ccount[x];
                 }
-                ctmp.clear();
-                ctmp.reserve(ccount[np] as usize);
-                unsafe { ctmp.set_len(ccount[np] as usize) };
+                cks.clear();
+                cks.reserve(ccount[np] as usize);
                 pos.clear();
                 pos.extend_from_slice(&ccount[..np]);
-                for (c, &x) in cks.iter().zip(cidx.iter()) {
+                for (c, &x) in clicks().zip(cidx.iter()) {
                     if x != u32::MAX {
                         let k = &mut pos[x as usize];
-                        ctmp[*k as usize] = *c;
+                        cks.spare_capacity_mut()[*k as usize].write(*c);
                         *k += 1;
                     }
                 }
-                std::mem::swap(&mut cks, &mut ctmp);
+                // Only clicks belonging to persons with surviving events occupy the initialized prefix.
+                unsafe { cks.set_len(ccount[np] as usize) };
                 for x in 0..np {
                     let r = &mut cks[ccount[x] as usize..ccount[x + 1] as usize];
                     if r.len() > 1 {
