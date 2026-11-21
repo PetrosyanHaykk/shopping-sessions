@@ -1,0 +1,105 @@
+name: Validate CPU and memory tuning
+on:
+  push:
+    branches: [perf/all-four]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install tools
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal --component rustfmt
+          python -m pip install polars
+      - name: Format, check, test and build
+        run: |
+          cargo +1.97.0 fmt -- --config skip_children=true
+          cargo +1.97.0 fmt -- --config skip_children=true --check
+          cargo +1.97.0 check --release --locked
+          cargo +1.97.0 test --release --locked
+          cargo +1.97.0 build --release --locked
+          cp target/release/shopping-sessions "$RUNNER_TEMP/candidate"
+          git worktree add --detach "$RUNNER_TEMP/baseline-src" e0ec4042aa64cc514bfcd4c892a696f2360d8e86
+          (cd "$RUNNER_TEMP/baseline-src" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" cargo +1.97.0 build --release --locked)
+          cp target/release/shopping-sessions "$RUNNER_TEMP/baseline"
+      - name: Test fixtures for every configuration
+        run: |
+          for groups in 1 2 4; do
+            for mmap in 0 1; do
+              for write in 0 1; do
+                GROUP_MULTIPLIER=$groups MMAP_POPULATE=$mmap PREFAULT_WRITE=$write python scripts/run_fixtures.py fixtures -- "$RUNNER_TEMP/candidate"
+              done
+            done
+          done
+      - name: Generate official data and verify dev answer
+        run: |
+          curl --fail --location --retry 3 https://www.joinbuilders.org/buildathon/tracks/shopping-sessions/files/generator.zip -o "$RUNNER_TEMP/generator.zip"
+          curl --fail --location --retry 3 https://www.joinbuilders.org/buildathon/tracks/shopping-sessions/files/dev-answer.zip -o "$RUNNER_TEMP/dev-answer.zip"
+          unzip -q "$RUNNER_TEMP/generator.zip" -d "$RUNNER_TEMP/official"
+          unzip -q "$RUNNER_TEMP/dev-answer.zip" -d "$RUNNER_TEMP/answer"
+          (cd "$RUNNER_TEMP/official/generator" && cargo +1.97.0 build --release --locked)
+          generate="$RUNNER_TEMP/official/generator/target/release/generate"
+          "$generate" --seed 1 --events 1000000 --clicks 250000 --output "$RUNNER_TEMP/dev"
+          answer=$(find "$RUNNER_TEMP/answer" -name user_daily.csv -printf '%h' -quit)
+          for version in baseline candidate; do
+            DATA_DIR="$RUNNER_TEMP/dev" OUTPUT_DIR="$RUNNER_TEMP/dev-$version" "$RUNNER_TEMP/$version"
+            python scripts/compare.py "$RUNNER_TEMP/dev-$version" "$answer"
+          done
+          "$generate" --seed 42 --events 20000000 --clicks 5000000 --output "$RUNNER_TEMP/data"
+      - name: Benchmark full pipeline and compare tables
+        shell: python
+        run: |
+          import itertools
+          import json
+          import os
+          from pathlib import Path
+          import random
+          import shutil
+          import statistics
+          import subprocess
+          import time
+          root = Path(os.environ["RUNNER_TEMP"])
+          reference = root / "reference-output"
+          base_env = dict(os.environ, DATA_DIR=str(root / "data"), NCPU="8")
+          base_env.pop("TIMING", None)
+          subprocess.run([str(root / "baseline")], env=dict(base_env, OUTPUT_DIR=str(reference)), check=True)
+          configs = [("baseline", 4, 1, 1)] + [
+              ("candidate", g, m, w) for g, m, w in itertools.product((1, 2, 4), (0, 1), (0, 1))]
+          times = {str(c): [] for c in configs}
+          for repeat in range(6):
+              order = list(configs)
+              random.Random(42 + repeat).shuffle(order)
+              for version, groups, mmap, write in order:
+                  config = (version, groups, mmap, write)
+                  output = root / "timed-output"
+                  env = dict(base_env, OUTPUT_DIR=str(output), GROUP_MULTIPLIER=str(groups),
+                             MMAP_POPULATE=str(mmap), PREFAULT_WRITE=str(write))
+                  started = time.perf_counter()
+                  subprocess.run([str(root / version)], env=env, check=True)
+                  elapsed = time.perf_counter() - started
+                  if repeat:
+                      times[str(config)].append(elapsed)
+                  print(f"repeat={repeat}, config={config}, wall={elapsed:.6f}s", flush=True)
+                  if repeat in (0, 5):
+                      subprocess.run(["python", "scripts/compare.py", str(output), str(reference)], check=True)
+                  shutil.rmtree(output)
+          result = {key: {"median": statistics.median(values), "runs": values}
+                    for key, values in times.items()}
+          report = json.dumps(result, indent=2)
+          (root / "benchmark.json").write_text(report)
+          print(report)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as handle:
+              handle.write("Official seed 42, 20M events, 5M clicks, NCPU=8. Five timed runs per mode.\n\n")
+              handle.write("~~~json\n" + report + "\n~~~\n")
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-results
+          path: |
+            ${{ runner.temp }}/benchmark.json
+            src/main.rs
