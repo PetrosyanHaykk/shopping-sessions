@@ -1,5 +1,5 @@
 //! Fast CSV line scanner for the rules.md dialect.
-//! 64-byte blocks -> bitmasks of ',', '\n', '"' (SSE2), then walk the delimiter bits.
+//! 64-byte blocks -> bitmasks of ',', '\n', '"' (SSE2 or runtime-selected AVX2), then walk the delimiter bits.
 //! A line is kept iff it is non-empty, has exactly N fields, and every '"' in it is the
 //! first or last byte of a field wrapped in quotes (checked by counting: quotes in the line
 //! must equal 2 x the number of quote-wrapped fields).
@@ -21,10 +21,43 @@ unsafe fn masks(p: *const u8) -> (u64, u64, u64) {
     (mc, mn, mq)
 }
 
+#[target_feature(enable = "avx2,bmi1,popcnt")]
+#[inline]
+unsafe fn masks_avx2(p: *const u8) -> (u64, u64, u64) {
+    let c = _mm256_set1_epi8(b',' as i8);
+    let n = _mm256_set1_epi8(b'\n' as i8);
+    let q = _mm256_set1_epi8(b'"' as i8);
+    let (mut mc, mut mn, mut mq) = (0u64, 0u64, 0u64);
+    for k in 0..2 {
+        let v = _mm256_loadu_si256(p.add(32 * k) as *const __m256i);
+        mc |= (_mm256_movemask_epi8(_mm256_cmpeq_epi8(v, c)) as u32 as u64) << (32 * k);
+        mn |= (_mm256_movemask_epi8(_mm256_cmpeq_epi8(v, n)) as u32 as u64) << (32 * k);
+        mq |= (_mm256_movemask_epi8(_mm256_cmpeq_epi8(v, q)) as u32 as u64) << (32 * k);
+    }
+    (mc, mn, mq)
+}
+
 /// Calls f(fields) for every well-formed line with exactly N fields (quotes stripped).
 /// The first line is skipped when skip_header. Only '\n' ends a line; a final unterminated line counts.
 #[inline(always)]
-pub fn scan<'a, const N: usize>(d: &'a [u8], skip_header: bool, mut f: impl FnMut(&[&'a [u8]; N])) {
+pub fn scan<'a, const N: usize>(d: &'a [u8], skip_header: bool, f: impl FnMut(&[&'a [u8]; N])) {
+    if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("bmi1") && is_x86_feature_detected!("popcnt") {
+        // Feature checks cover every instruction enabled in the specialized scanner.
+        unsafe { scan_avx2::<N>(d, skip_header, f) }
+    } else {
+        scan_impl::<N, false>(d, skip_header, f)
+    }
+}
+
+#[target_feature(enable = "avx2,bmi1,popcnt")]
+unsafe fn scan_avx2<'a, const N: usize>(d: &'a [u8], skip_header: bool, f: impl FnMut(&[&'a [u8]; N])) {
+    scan_impl::<N, true>(d, skip_header, f)
+}
+
+#[inline(always)]
+fn scan_impl<'a, const N: usize, const AVX2: bool>(
+    d: &'a [u8], skip_header: bool, mut f: impl FnMut(&[&'a [u8]; N]),
+) {
     let len = d.len();
     let mut ends = [0usize; N];
     let mut n = 0usize;
@@ -69,12 +102,20 @@ pub fn scan<'a, const N: usize>(d: &'a [u8], skip_header: bool, mut f: impl FnMu
     while i < len {
         let (c, nl, q) = unsafe {
             if i + 64 <= len {
-                masks(d.as_ptr().add(i))
+                if AVX2 {
+                    masks_avx2(d.as_ptr().add(i))
+                } else {
+                    masks(d.as_ptr().add(i))
+                }
             } else {
                 let r = len - i;
                 pad = [0u8; 64];
                 pad[..r].copy_from_slice(&d[i..]);
-                masks(pad.as_ptr())
+                if AVX2 {
+                    masks_avx2(pad.as_ptr())
+                } else {
+                    masks(pad.as_ptr())
+                }
             }
         };
         let mut delim = c | nl;
