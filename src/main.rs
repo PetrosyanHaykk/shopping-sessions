@@ -1091,9 +1091,10 @@ fn main() {
                                 if ingest - ts > DAY {
                                     break 'v; // late: dropped if this copy is the kept one
                                 }
-                                let cat = prod.get(f[5]);
                                 e.ts = (ts - ws) as u32;
-                                e.pc = (price << 8) | cat as u32;
+                                if price > 0 {
+                                    e.pc = (price << 8) | u32::from(prod.get(f[5]));
+                                }
                                 e.name = pack(f[1]);
                                 let uh = h64(f[1]);
                                 links.prefetch(uh);
