@@ -578,6 +578,33 @@ impl LinkMap {
     }
 }
 
+/// Per-parser cache of immutable link lookups, including absent IDs.
+/// Full hashes are checked before reusing an entry.
+struct LinkCache<'a> {
+    links: &'a LinkMap,
+    hashes: [u64; 64],
+    values: [Option<(u64, u64)>; 64],
+    valid: u64,
+}
+impl<'a> LinkCache<'a> {
+    fn new(links: &'a LinkMap) -> Self {
+        Self { links, hashes: [0; 64], values: [None; 64], valid: 0 }
+    }
+    #[inline]
+    fn get(&mut self, hash: u64) -> Option<(u64, u64)> {
+        let slot = (hash as usize) & 63;
+        let bit = 1u64 << slot;
+        if self.valid & bit != 0 && self.hashes[slot] == hash {
+            return self.values[slot];
+        }
+        let value = self.links.get_hash_only(hash);
+        self.hashes[slot] = hash;
+        self.values[slot] = value;
+        self.valid |= bit;
+        value
+    }
+}
+
 /// Concurrent union-find over all link lines, on the hash table's slot indices (CAS links the
 /// larger root under the smaller). Every linked ID then gets its person: the byte-wise smallest
 /// ID of its component, and that ID's hash.
@@ -1041,11 +1068,12 @@ fn main() {
                     let bytes: usize = grp.iter().map(|&i| ev_chunks[i].data.len()).sum();
                     let mut acc: Buckets<Ev> = Buckets::new(bytes / 70);
                     let mut c1 = TsCache::new();
+                    let mut link_cache = LinkCache::new(&links);
                     let mut pend: [(Ev, u64); BATCH] = [(Ev { eh: 0, nh: 0, name: 0, ingest: 0, ts: 0, pc: 0 }, 0); BATCH];
                     let mut np = 0usize;
-                    let flush = |pend: &[(Ev, u64)], acc: &mut Buckets<Ev>| {
+                    let mut flush = |pend: &[(Ev, u64)], acc: &mut Buckets<Ev>| {
                         for &(mut e, uh) in pend {
-                            match links.get_hash_only(uh) {
+                            match link_cache.get(uh) {
                                 Some((name, nh)) => {
                                     e.name = name;
                                     e.nh = nh;
@@ -1124,11 +1152,12 @@ fn main() {
                     let bytes: usize = grp.iter().map(|&i| ck_chunks[i].data.len()).sum();
                     let mut acc: Buckets<PC> = Buckets::new(bytes / 43);
                     let mut c1 = TsCache::new();
+                    let mut link_cache = LinkCache::new(&links);
                     let mut pend: [(PC, u64); BATCH] = [(PC { nh: 0, cid: 0, ts: 0, camp: 0 }, 0); BATCH];
                     let mut np = 0usize;
-                    let flush = |pend: &[(PC, u64)], acc: &mut Buckets<PC>| {
+                    let mut flush = |pend: &[(PC, u64)], acc: &mut Buckets<PC>| {
                         for &(mut c, uh) in pend {
-                            c.nh = match links.get_hash_only(uh) {
+                            c.nh = match link_cache.get(uh) {
                                 Some((_, nh)) => nh,
                                 None => uh,
                             };
