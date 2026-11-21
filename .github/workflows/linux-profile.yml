@@ -1,0 +1,113 @@
+name: Linux pipeline profiling
+on:
+  push:
+    branches: [perf/linux-profiling]
+permissions:
+  contents: read
+jobs:
+  profile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install validation tools
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal
+          python -m pip install polars
+      - name: Build and verify both versions
+        run: |
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/shared-target"
+          mkdir -p "$RUNNER_TEMP/binaries"
+          for version in baseline grouped; do
+            if [ "$version" = baseline ]; then
+              revision=e0ec4042aa64cc514bfcd4c892a696f2360d8e86
+            else
+              revision=f43b27d2d41c48fca5e66d550687c7b2671d85e6
+            fi
+            git worktree add --detach "$RUNNER_TEMP/$version" "$revision"
+            (cd "$RUNNER_TEMP/$version" && cargo +1.97.0 build --release --locked)
+            cp "$CARGO_TARGET_DIR/release/shopping-sessions" "$RUNNER_TEMP/binaries/$version"
+            python scripts/run_fixtures.py fixtures -- "$RUNNER_TEMP/binaries/$version"
+          done
+      - name: Generate benchmark inputs
+        shell: python
+        run: |
+          import datetime as dt
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / "data"
+          root.mkdir()
+          for table in ("events", "clicks", "links"):
+              (root / table).mkdir()
+          (root / "manifest.json").write_text(json.dumps({
+              "window_start": "2026-10-01T00:00:00Z",
+              "window_end": "2026-10-15T00:00:00Z"}))
+          (root / "products.csv").write_text(
+              "product_id,category\n" + "".join(f"p{i},cat{i % 20}\n" for i in range(10000)))
+          (root / "campaigns.csv").write_text(
+              "campaign_id,channel\n" + "".join(f"c_{i},search\n" for i in range(100)))
+          (root / "links/part.csv").write_text(
+              "user_id_a,user_id_b\n" + "".join(f"alias{i},u{i}\n" for i in range(10000)))
+          day = dt.datetime(2026, 10, 1, tzinfo=dt.timezone.utc)
+          stamps = [(day + dt.timedelta(seconds=i * 60)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(20160)]
+          with (root / "events/part.csv").open("w") as handle:
+              handle.write("event_id,user_id,ts,ingest_ts,event_type,product_id,price_cents\n")
+              for i in range(5000000):
+                  n = i - 1 if i % 20 == 19 else i
+                  t = stamps[(n * 7919) % len(stamps)]
+                  event = "purchase" if n % 10 == 0 else "view"
+                  user = f"alias{n % 10000}" if n % 7 == 0 else f"u{n % 50000}"
+                  handle.write(f"e{n},{user},{t},{t},{event},p{n % 10000},1000\n")
+          with (root / "clicks/part.csv").open("w") as handle:
+              handle.write("click_id,user_id,campaign_id,ts\n")
+              for i in range(1250000):
+                  handle.write(f"k{i},u{i % 50000},c_{i % 100},{stamps[(i * 7919) % len(stamps)]}\n")
+      - name: Measure the whole pipeline
+        shell: python
+        run: |
+          import json
+          import os
+          from pathlib import Path
+          import statistics
+          import subprocess
+          import time
+          root = Path(os.environ["RUNNER_TEMP"])
+          times = {}
+          lines = []
+          for threads in sorted({1, os.cpu_count()}):
+              for repeat in range(6):
+                  versions = ["baseline", "grouped"]
+                  if repeat % 2:
+                      versions.reverse()
+                  for version in versions:
+                      output = root / f"out-{version}"
+                      env = dict(os.environ, DATA_DIR=str(root / "data"),
+                                 OUTPUT_DIR=str(output), NCPU=str(threads), TIMING="1")
+                      started = time.perf_counter()
+                      result = subprocess.run([str(root / "binaries" / version)],
+                                              env=env, capture_output=True, text=True, check=True)
+                      elapsed = time.perf_counter() - started
+                      if repeat:
+                          times.setdefault(f"{version}/{threads} threads", []).append(elapsed)
+                      lines.append(f"{version}, threads={threads}, repeat={repeat}, wall={elapsed:.6f}s")
+                      lines.append(result.stderr)
+                      print(lines[-2], flush=True)
+                      print(result.stderr, flush=True)
+              subprocess.run(["python", "scripts/compare.py",
+                              str(root / "out-baseline"), str(root / "out-grouped")], check=True)
+          summary = {key: {"median": statistics.median(values), "runs": values}
+                     for key, values in times.items()}
+          text = json.dumps(summary, indent=2)
+          print(text)
+          (root / "profile.txt").write_text("\n".join(lines) + "\n" + text)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as handle:
+              handle.write("Five million generated events and 1.25 million clicks.\n\n")
+              handle.write("Synthetic workload. Competition hardware and inputs may differ.\n\n")
+              handle.write("~~~json\n" + text + "\n~~~\n")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-profile
+          path: ${{ runner.temp }}/profile.txt
